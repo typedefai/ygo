@@ -5,29 +5,73 @@ type Range struct {
 	End   uint64
 }
 
-type OrderRange interface {
-	GetRanges() []Range
-	RangesLength() int
-	IsEmpty() bool
-	Contains(clock uint64) bool
-	DiffRange(newRange OrderRange) []Range
+func NewRange(start uint64, end uint64) *Range {
+	return &Range{start, end}
 }
 
-type Fragmented struct {
-	ranges []Range
+func (r *Range) IsEmpty() bool {
+	return !(r.Start < r.End)
 }
 
-var _ OrderRange = &Range{}
-var _ OrderRange = &Fragmented{}
-
-func NewRange(start uint64, end uint64) Range {
-	return Range{Start: start, End: end}
+func (r *Range) Contains(item uint64) bool {
+	return item >= r.Start && item <= r.End
 }
 
-func NewFragmented(r []Range) Fragmented {
-	return Fragmented{
-		ranges: r,
+type OrderRange struct {
+	Ranges []Range
+}
+
+func NewDefaultOrderRange() *OrderRange {
+	return &OrderRange{
+		Ranges: []Range{{0, 0}},
 	}
+}
+
+func NewOrderRange(start uint64, end uint64) *OrderRange {
+	return &OrderRange{
+		Ranges: []Range{{start, end}},
+	}
+}
+
+func FromRange(r Range) *OrderRange {
+	return &OrderRange{
+		Ranges: []Range{r},
+	}
+}
+
+func FromVec(vec []Range) *OrderRange {
+	return &OrderRange{
+		Ranges: vec,
+	}
+}
+
+func IsContinuousRange(lhs *Range, rhs *Range) bool {
+	return lhs.End >= rhs.Start && lhs.Start <= rhs.End
+}
+
+func (o *OrderRange) RangesLen() int {
+	return len(o.Ranges)
+}
+
+func (o *OrderRange) isFragmented() bool {
+	return len(o.Ranges) != 1
+}
+
+func (o *OrderRange) IsEmpty() bool {
+	if o.isFragmented() {
+		return len(o.Ranges) == 0
+	} else {
+		return o.Ranges[0].IsEmpty()
+	}
+}
+
+func (o *OrderRange) Contains(clock uint64) bool {
+	for _, r := range o.Ranges {
+		if r.Start <= clock && clock <= r.End {
+			return true
+		}
+	}
+	return false
 }
 
 func isRangeCovered(oldRange *Range, newVec *[]Range) bool {
@@ -39,7 +83,7 @@ func isRangeCovered(oldRange *Range, newVec *[]Range) bool {
 	return false
 }
 
-func CheckRangeCovered(oldVect *[]Range, newVec *[]Range) bool {
+func checkRangeCovered(oldVect *[]Range, newVec *[]Range) bool {
 	for _, oldRange := range *oldVect {
 		if !isRangeCovered(&oldRange, newVec) {
 			return false
@@ -50,8 +94,8 @@ func CheckRangeCovered(oldVect *[]Range, newVec *[]Range) bool {
 
 // diff_range returns the difference between the old range and the new
 // range. current range must be covered by the new range
-func DiffRange(oldVec *[]Range, newVec *[]Range) []Range {
-	if !CheckRangeCovered(oldVec, newVec) {
+func diffRange(oldVec *[]Range, newVec *[]Range) []Range {
+	if !checkRangeCovered(oldVec, newVec) {
 		return []Range{}
 	}
 
@@ -73,69 +117,24 @@ func DiffRange(oldVec *[]Range, newVec *[]Range) []Range {
 		} else {
 			lastEnd := overlapRanges[0].Start
 			if lastEnd > n.Start {
-				diffs = append(diffs, NewRange(n.Start, lastEnd))
+				diffs = append(diffs, *NewRange(n.Start, lastEnd))
 			}
 			for _, o := range overlapRanges {
 				if o.Start > lastEnd {
-					diffs = append(diffs, NewRange(lastEnd, o.Start))
+					diffs = append(diffs, *NewRange(lastEnd, o.Start))
 				}
 				lastEnd = o.End
 			}
 			if n.End > lastEnd {
-				diffs = append(diffs, NewRange(lastEnd, n.End))
+				diffs = append(diffs, *NewRange(lastEnd, n.End))
 			}
 		}
 	}
 	return diffs
 }
 
-func (r *Range) GetRanges() []Range {
-	return []Range{*r}
-}
-
-func (r *Range) IsEmpty() bool {
-	return r.Start >= r.End
-}
-
-func (r *Range) RangesLength() int {
-	return 1
-}
-
-func (r *Range) Contains(clock uint64) bool {
-	return clock >= r.Start && clock <= r.End
-}
-
-func (r *Range) DiffRange(newRange OrderRange) []Range {
-	oldVec := r.GetRanges()
-	newVec := newRange.GetRanges()
-	return DiffRange(&oldVec, &newVec)
-}
-
-func (r *Fragmented) GetRanges() []Range {
-	return r.ranges
-}
-
-func (r *Fragmented) IsEmpty() bool {
-	return len(r.ranges) == 0
-}
-
-func (r *Fragmented) RangesLength() int {
-	return len(r.ranges)
-}
-
-func (r *Fragmented) Contains(clock uint64) bool {
-	for _, i := range r.ranges {
-		if i.Contains(clock) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Fragmented) DiffRange(newRange OrderRange) []Range {
-	oldVec := r.GetRanges()
-	newVec := newRange.GetRanges()
-	return DiffRange(&oldVec, &newVec)
+func (o *OrderRange) DiffRange(newRange *OrderRange) []Range {
+	return diffRange(&o.Ranges, &newRange.Ranges)
 }
 
 // func (r *IdRange) IsContinuous() bool {
