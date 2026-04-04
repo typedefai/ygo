@@ -1,9 +1,7 @@
 package ygo
 
 import (
-	"fmt"
 	"io"
-	"math"
 
 	"riguz.com/ygo/internal/lib0"
 )
@@ -17,15 +15,15 @@ type Decode interface {
 type Decoder interface {
 	lib0.Read
 	ResetDsCurVal()
-	ReadDsClock() (uint32, error)
-	ReadDsLen() (uint32, error)
+	ReadDsClock() (uint64, error)
+	ReadDsLen() (uint64, error)
 	ReadLeftId() (ID, error)
 	ReadRightId() (ID, error)
 	ReadClient() (ClientID, error)
 	ReadInfo() (uint8, error)
 	ReadParentInfo() (bool, error)
 	ReadTypeRef() (uint8, error)
-	ReadLen() (uint32, error)
+	ReadLen() (uint64, error)
 	ReadKey() (*string, error)
 }
 
@@ -57,23 +55,12 @@ func (d *DecoderV1) ReadVarInt() (int64, error)               { return d.cursor.
 func (d *DecoderV1) ReadVarString() (string, error)           { return d.cursor.ReadVarString() }
 func (d *DecoderV1) ReadAny() (any, error)                    { return d.cursor.ReadAny() }
 
-func (d *DecoderV1) readVarUint32() (uint32, error) {
-	num, err := d.ReadVarUint()
-	if err != nil {
-		return 0, err
-	}
-	if num > math.MaxUint32 {
-		return 0, fmt.Errorf("var int exceeds max uint32 range: %v", num)
-	}
-	return uint32(num), err
-}
-
 func (d *DecoderV1) readId() (ID, error) {
-	client, err := d.readVarUint32()
+	client, err := d.ReadVarUint()
 	if err != nil {
 		return ID{}, err
 	}
-	clock, err := d.readVarUint32()
+	clock, err := d.ReadVarUint()
 	if err != nil {
 		return ID{}, err
 	}
@@ -87,12 +74,12 @@ func (d *DecoderV1) ResetDsCurVal() {
 	/* no op */
 }
 
-func (d *DecoderV1) ReadDsClock() (uint32, error) {
-	return d.readVarUint32()
+func (d *DecoderV1) ReadDsClock() (uint64, error) {
+	return d.ReadVarUint()
 }
 
-func (d *DecoderV1) ReadDsLen() (uint32, error) {
-	return d.readVarUint32()
+func (d *DecoderV1) ReadDsLen() (uint64, error) {
+	return d.ReadVarUint()
 }
 
 func (d *DecoderV1) ReadLeftId() (ID, error) {
@@ -104,7 +91,7 @@ func (d *DecoderV1) ReadRightId() (ID, error) {
 }
 
 func (d *DecoderV1) ReadClient() (ClientID, error) {
-	id, err := d.readVarUint32()
+	id, err := d.ReadVarUint()
 	return ClientID(id), err
 }
 
@@ -113,7 +100,7 @@ func (d *DecoderV1) ReadInfo() (uint8, error) {
 }
 
 func (d *DecoderV1) ReadParentInfo() (bool, error) {
-	v, err := d.ReadUint8()
+	v, err := d.ReadVarUint()
 	if err != nil {
 		return false, err
 	}
@@ -124,8 +111,8 @@ func (d *DecoderV1) ReadTypeRef() (uint8, error) {
 	return d.ReadUint8()
 }
 
-func (d *DecoderV1) ReadLen() (uint32, error) {
-	return d.readVarUint32()
+func (d *DecoderV1) ReadLen() (uint64, error) {
+	return d.ReadVarUint()
 }
 
 func (d *DecoderV1) ReadKey() (*string, error) {

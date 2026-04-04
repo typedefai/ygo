@@ -15,15 +15,15 @@ type Encode interface {
 type Encoder interface {
 	lib0.Write
 	ResetDsCurVal()
-	WriteDsClock(clock uint32) error
-	WriteDsLen(len uint32) error
+	WriteDsClock(clock uint64) error
+	WriteDsLen(len uint64) error
 	WriteLeftId(id ID) error
 	WriteRightId(id ID) error
 	WriteClient(client ClientID) error
 	WriteInfo(info uint8) error
 	WriteParentInfo(isYKey bool) error
 	WriteTypeRef(info uint8) error
-	WriteLen(len uint32) error
+	WriteLen(len uint64) error
 	WriteJson(data any) error
 	WriteKey(key *string) error
 }
@@ -76,12 +76,12 @@ func (e *EncoderV1) ResetDsCurVal() {
 	/* no op */
 }
 
-func (e *EncoderV1) WriteDsClock(clock uint32) error {
-	return e.buf.WriteVarUint32(clock)
+func (e *EncoderV1) WriteDsClock(clock uint64) error {
+	return e.buf.WriteVarUint64(clock)
 }
 
-func (e *EncoderV1) WriteDsLen(len uint32) error {
-	return e.buf.WriteVarUint32(len)
+func (e *EncoderV1) WriteDsLen(len uint64) error {
+	return e.buf.WriteVarUint64(len)
 }
 
 func (e *EncoderV1) WriteLeftId(id ID) error {
@@ -112,8 +112,8 @@ func (e *EncoderV1) WriteTypeRef(info uint8) error {
 	return e.buf.WriteUint8(info)
 }
 
-func (e *EncoderV1) WriteLen(len uint32) error {
-	return e.buf.WriteVarUint32(len)
+func (e *EncoderV1) WriteLen(len uint64) error {
+	return e.buf.WriteVarUint64(len)
 }
 
 func (e *EncoderV1) WriteJson(data any) error {

@@ -66,8 +66,25 @@ func NewDoc() (*Doc, error) {
 
 func NewDocWithOptions(options DocOptions) *Doc {
 	return &Doc{
-		clientId: options.ClientId,
-		options:  options,
-		// todo
+		clientId:  options.ClientId,
+		options:   options,
+		store:     NewDocStore(),
+		publisher: NewDocPublisher(),
 	}
+}
+
+func (d *Doc) ClientID() uint64 {
+	return d.clientId
+}
+
+func (d *Doc) Options() DocOptions {
+	return d.options
+}
+
+func (d *Doc) Store() *DocStore {
+	return d.store
+}
+
+func (d *Doc) Publisher() *DocPublisher {
+	return d.publisher
 }

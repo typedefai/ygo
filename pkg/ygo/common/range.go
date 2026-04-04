@@ -45,7 +45,7 @@ func FromVec(vec []Range) *OrderRange {
 	}
 }
 
-func IsContinuousRange(lhs *Range, rhs *Range) bool {
+func isContinuousRange(lhs *Range, rhs *Range) bool {
 	return lhs.End >= rhs.Start && lhs.Start <= rhs.End
 }
 
@@ -137,13 +137,92 @@ func (o *OrderRange) DiffRange(newRange *OrderRange) []Range {
 	return diffRange(&o.Ranges, &newRange.Ranges)
 }
 
-// func (r *IdRange) IsContinuous() bool {
-// 	return r.continuous != nil
-// }
+func (o *OrderRange) Squash() {
+	if len(o.Ranges) > 1 {
 
-// func (r *IdRange) IsFragmented() bool {
-// 	return r.fragmented != nil
-// }
+	}
+}
+
+func max(a uint64, b uint64) uint64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a uint64, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func pushInner(list *[]Range, newRange *Range) {
+	if len(*list) == 0 {
+		*list = append(*list, *newRange)
+	} else {
+		merged := false
+		for i := range *list {
+			if isContinuousRange(&(*list)[i], newRange) {
+				(*list)[i].Start = min((*list)[i].Start, newRange.Start)
+				(*list)[i].End = max((*list)[i].End, newRange.End)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			// insert in sorted order
+			inserted := false
+			for i := range *list {
+				if newRange.Start < (*list)[i].Start {
+					result := make([]Range, 0, len(*list)+1)
+					result = append(result, (*list)[:i]...)
+					result = append(result, *newRange)
+					result = append(result, (*list)[i:]...)
+					*list = result
+					inserted = true
+					break
+				}
+			}
+			if !inserted {
+				*list = append(*list, *newRange)
+			}
+		}
+	}
+}
+
+// Push new range to current one.
+// Range will be merged if overlap exists or turned into fragment if it's
+// not continuous.
+func (o *OrderRange) Push(newRange *Range) {
+	if o.isFragmented() {
+		if o.IsEmpty() {
+			o.Ranges = []Range{*newRange}
+		} else {
+			pushInner(&o.Ranges, newRange)
+		}
+	} else {
+		r := &o.Ranges[0]
+		if r.Start == r.End {
+			o.Ranges[0] = *newRange
+		} else if isContinuousRange(r, newRange) {
+			r.End = max(r.End, newRange.End)
+			r.Start = min(r.Start, newRange.Start)
+		} else {
+			if r.Start < newRange.Start {
+				o.Ranges = []Range{*r, *newRange}
+			} else {
+				o.Ranges = []Range{*newRange, *r}
+			}
+		}
+	}
+}
+
+func squashAround(list *[]Range, idx uint) {
+	if idx > 0 {
+
+	}
+}
 
 // func (r *IdRange) Invert() IdRange {
 // 	if r.IsContinuous() {
@@ -166,19 +245,6 @@ func (o *OrderRange) DiffRange(newRange *OrderRange) []Range {
 // 		default:
 // 			return NewFragmented(&inv)
 // 		}
-// 	}
-// }
-
-// func (r *IdRange) Contains(clock uint32) bool {
-// 	if r.IsContinuous() {
-// 		return r.continuous.Contains(clock)
-// 	} else {
-// 		for _, i := range *r.fragmented {
-// 			if i.Contains(clock) {
-// 				return true
-// 			}
-// 		}
-// 		return false
 // 	}
 // }
 

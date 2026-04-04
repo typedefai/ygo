@@ -1,10 +1,18 @@
 package ygo
 
+import (
+	"fmt"
+	"unicode/utf16"
+	"unicode/utf8"
+)
+
 type ClientID uint64
+
+type Clock = uint64
 
 type ID struct {
 	Client ClientID
-	Clock  uint32
+	Clock  Clock
 }
 
 type Block interface {
@@ -12,7 +20,7 @@ type Block interface {
 	AsItem() (*Item, error)
 	IsDeleted() bool
 	Id() ID
-	Len() uint32
+	Len() uint64
 	SameType(other *Block) bool
 	IsGc() bool
 	IsItem() bool
@@ -21,22 +29,25 @@ type Block interface {
 
 type Item struct {
 	ID          ID
-	Len         uint32
-	Left        *Block
-	Right       *Block
+	Length      uint64
+	Left        *Item
+	Right       *Item
 	Origin      *ID
 	RightOrigin *ID
 	Content     ItemContent
-	Parent      TypePtr
+	Parent      *Parent
 	ParentSub   *string
-	Moved       *Block
 	Info        ItemFlags
 }
 
 func (i *Item) Contains(id ID) bool {
+	length := i.Length
+	if length == 0 {
+		length = i.Len()
+	}
 	return i.ID.Client == id.Client &&
 		id.Clock >= i.ID.Clock &&
-		id.Clock < i.ID.Clock+i.Len
+		id.Clock < i.ID.Clock+length
 }
 
 func (i *Item) IsDeleted() bool {
@@ -51,10 +62,18 @@ func (i *Item) MarkAsDeleted() {
 	i.Info.SetDeleted()
 }
 
+func (i *Item) Len() uint64 {
+	return i.Content.ClockLen()
+}
+
 func (i *Item) LastId() ID {
+	length := i.Length
+	if length == 0 {
+		length = i.Len()
+	}
 	return ID{
 		Client: i.ID.Client,
-		Clock:  i.ID.Clock + i.Len - 1,
+		Clock:  i.ID.Clock + length - 1,
 	}
 }
 
@@ -62,6 +81,7 @@ const (
 	HAS_ORIGIN       uint8 = 0b1000_0000
 	HAS_RIGHT_ORIGIN uint8 = 0b0100_0000
 	HAS_PARENT_SUB   uint8 = 0b0010_0000
+	HAS_SIBLING      uint8 = 0b1100_0000 // HAS_ORIGIN | HAS_RIGHT_ORIGIN
 )
 
 func (i *Item) ItemInfo() uint8 {
@@ -81,17 +101,243 @@ func (i *Item) ItemInfo() uint8 {
 	return info
 }
 
+// ReadItem reads an Item from the decoder. id is the item's ID, info is the
+// info byte already read, and first5Bit is info & 0x1f (the content tag).
+func ReadItem(decoder Decoder, id ID, info uint8, first5Bit uint8) (*Item, error) {
+	hasLeftID := info&HAS_ORIGIN != 0
+	hasRightID := info&HAS_RIGHT_ORIGIN != 0
+	hasParentSub := info&HAS_PARENT_SUB != 0
+	hasNotSibling := info&HAS_SIBLING == 0
+
+	var origin *ID
+	if hasLeftID {
+		leftID, err := decoder.ReadLeftId()
+		if err != nil {
+			return nil, err
+		}
+		origin = &leftID
+	}
+
+	var rightOrigin *ID
+	if hasRightID {
+		rightID, err := decoder.ReadRightId()
+		if err != nil {
+			return nil, err
+		}
+		rightOrigin = &rightID
+	}
+
+	var parent *Parent
+	if hasNotSibling {
+		hasParent, err := decoder.ReadParentInfo()
+		if err != nil {
+			return nil, err
+		}
+		if hasParent {
+			name, err := decoder.ReadVarString()
+			if err != nil {
+				return nil, err
+			}
+			p := ParentFromString(name)
+			parent = &p
+		} else {
+			pid, err := decoder.ReadLeftId()
+			if err != nil {
+				return nil, err
+			}
+			p := ParentFromID(pid)
+			parent = &p
+		}
+	}
+
+	var parentSub *string
+	if hasNotSibling && hasParentSub {
+		s, err := decoder.ReadVarString()
+		if err != nil {
+			return nil, err
+		}
+		parentSub = &s
+	}
+
+	content, err := ReadContent(decoder, first5Bit)
+	if err != nil {
+		return nil, err
+	}
+
+	item := &Item{
+		ID:          id,
+		Origin:      origin,
+		RightOrigin: rightOrigin,
+		Parent:      parent,
+		ParentSub:   parentSub,
+		Content:     content,
+		Info:        NewItemFlags(0),
+	}
+
+	if item.Content.IsCountable() {
+		item.Info.SetCountable()
+	}
+	if _, ok := item.Content.(*DeletedContent); ok {
+		item.Info.SetDeleted()
+	}
+
+	return item, nil
+}
+
+// WriteItem writes the item to the encoder
+func (i *Item) WriteItem(encoder Encoder) error {
+	info := i.ItemInfo()
+	hasNotSibling := info&HAS_SIBLING == 0
+
+	if err := encoder.WriteInfo(info); err != nil {
+		return err
+	}
+
+	if i.Origin != nil {
+		if err := encoder.WriteLeftId(*i.Origin); err != nil {
+			return err
+		}
+	}
+	if i.RightOrigin != nil {
+		if err := encoder.WriteRightId(*i.RightOrigin); err != nil {
+			return err
+		}
+	}
+
+	if hasNotSibling {
+		if i.Parent == nil {
+			return NewParentNotFoundError()
+		}
+		if i.Parent.Named != nil {
+			if err := encoder.WriteParentInfo(true); err != nil {
+				return err
+			}
+			if err := encoder.WriteVarString(i.Parent.Named); err != nil {
+				return err
+			}
+		} else if i.Parent.ID != nil {
+			if err := encoder.WriteParentInfo(false); err != nil {
+				return err
+			}
+			if err := encoder.WriteLeftId(*i.Parent.ID); err != nil {
+				return err
+			}
+		}
+
+		if i.ParentSub != nil {
+			if err := encoder.WriteVarString(i.ParentSub); err != nil {
+				return err
+			}
+		}
+	}
+
+	return i.Content.Write(encoder)
+}
+
+// SplitAt splits the item at the given offset
+func (i *Item) SplitAt(offset uint64) (*Item, *Item, error) {
+	leftContent, rightContent, err := i.Content.Split(offset)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rightID := ID{Client: i.ID.Client, Clock: i.ID.Clock + offset}
+
+	leftItem := &Item{
+		ID:          i.ID,
+		Origin:      i.Origin,
+		RightOrigin: i.RightOrigin,
+		Parent:      i.Parent,
+		ParentSub:   i.ParentSub,
+		Content:     leftContent,
+		Info:        NewItemFlags(0),
+	}
+	if leftContent.IsCountable() {
+		leftItem.Info.SetCountable()
+	}
+	if i.IsDeleted() {
+		leftItem.Info.SetDeleted()
+	}
+	if i.Info.IsKeep() {
+		leftItem.Info.Set(ITEM_FLAG_KEEP)
+	}
+
+	rightItem := &Item{
+		ID:          rightID,
+		Origin:      i.Origin,
+		RightOrigin: i.RightOrigin,
+		Parent:      i.Parent,
+		ParentSub:   i.ParentSub,
+		Content:     rightContent,
+		Info:        NewItemFlags(0),
+	}
+	if rightContent.IsCountable() {
+		rightItem.Info.SetCountable()
+	}
+
+	return leftItem, rightItem, nil
+}
+
 type GC struct {
 }
 
 type BlockRange struct {
 	ID  ID
-	Len uint32
+	Len uint64
 }
 
 type ItemContent interface {
 	GetRefNumber() uint8
 	IsCountable() bool
+	ClockLen() uint64
+	Read(decoder Decoder) error
+	Write(encoder Encoder) error
+	Split(offset uint64) (ItemContent, ItemContent, error)
+}
+
+// YTypeKind represents the kind of Y type
+type YTypeKind uint64
+
+const (
+	YTypeArray       YTypeKind = 0
+	YTypeMap         YTypeKind = 1
+	YTypeText        YTypeKind = 2
+	YTypeXMLElement  YTypeKind = 3
+	YTypeXMLFragment YTypeKind = 4
+	YTypeXMLHook     YTypeKind = 5
+	YTypeXMLText     YTypeKind = 6
+	YTypeUnknown     YTypeKind = 255
+)
+
+func YTypeKindFromU64(v uint64) YTypeKind {
+	switch v {
+	case 0:
+		return YTypeArray
+	case 1:
+		return YTypeMap
+	case 2:
+		return YTypeText
+	case 3:
+		return YTypeXMLElement
+	case 4:
+		return YTypeXMLFragment
+	case 5:
+		return YTypeXMLHook
+	case 6:
+		return YTypeXMLText
+	default:
+		return YTypeUnknown
+	}
+}
+
+// YTypeRef represents a reference to a Y type (used in TypeContent)
+type YTypeRef struct {
+	Kind    YTypeKind
+	TagName *string // only for XMLElement and XMLHook
+}
+
+func NewYTypeRef(kind YTypeKind, tagName *string) YTypeRef {
+	return YTypeRef{Kind: kind, TagName: tagName}
 }
 
 const (
@@ -109,104 +355,387 @@ const (
 	BLOCK_ITEM_MOVE_REF_NUMBER    uint8 = 11
 )
 
+// --- DeletedContent ---
+
+type DeletedContent struct {
+	Len uint64
+}
+
+func (c *DeletedContent) GetRefNumber() uint8 { return BLOCK_ITEM_DELETED_REF_NUMBER }
+func (c *DeletedContent) IsCountable() bool   { return false }
+func (c *DeletedContent) ClockLen() uint64    { return c.Len }
+
+func (c *DeletedContent) Read(decoder Decoder) error {
+	length, err := decoder.ReadVarUint()
+	if err != nil {
+		return err
+	}
+	c.Len = length
+	return nil
+}
+
+func (c *DeletedContent) Write(encoder Encoder) error {
+	return encoder.WriteVarUint64(c.Len)
+}
+
+func (c *DeletedContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return &DeletedContent{Len: offset}, &DeletedContent{Len: c.Len - offset}, nil
+}
+
+// --- JsonContent ---
+
+type JsonContent struct {
+	Data []string // "undefined" represented as-is
+}
+
+func (c *JsonContent) GetRefNumber() uint8 { return BLOCK_ITEM_JSON_REF_NUMBER }
+func (c *JsonContent) IsCountable() bool   { return true }
+func (c *JsonContent) ClockLen() uint64    { return uint64(len(c.Data)) }
+
+func (c *JsonContent) Read(decoder Decoder) error {
+	length, err := decoder.ReadVarUint()
+	if err != nil {
+		return err
+	}
+	c.Data = make([]string, length)
+	for i := uint64(0); i < length; i++ {
+		s, err := decoder.ReadVarString()
+		if err != nil {
+			return err
+		}
+		c.Data[i] = s
+	}
+	return nil
+}
+
+func (c *JsonContent) Write(encoder Encoder) error {
+	if err := encoder.WriteVarUint64(uint64(len(c.Data))); err != nil {
+		return err
+	}
+	for _, s := range c.Data {
+		if err := encoder.WriteVarString(&s); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *JsonContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	left := c.Data[:offset]
+	right := c.Data[offset:]
+	return &JsonContent{Data: append([]string{}, left...)},
+		&JsonContent{Data: append([]string{}, right...)}, nil
+}
+
+// --- BinaryContent ---
+
+type BinaryContent struct {
+	Data []byte
+}
+
+func (c *BinaryContent) GetRefNumber() uint8 { return BLOCK_ITEM_BINARY_REF_NUMBER }
+func (c *BinaryContent) IsCountable() bool   { return true }
+func (c *BinaryContent) ClockLen() uint64    { return 1 }
+
+func (c *BinaryContent) Read(decoder Decoder) error {
+	data, err := decoder.ReadVarUint8Array()
+	if err != nil {
+		return err
+	}
+	c.Data = data
+	return nil
+}
+
+func (c *BinaryContent) Write(encoder Encoder) error {
+	return encoder.WriteVarUint8Array(c.Data)
+}
+
+func (c *BinaryContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
+}
+
+// --- StringContent ---
+
+type StringContent struct {
+	Data string
+}
+
+func (c *StringContent) GetRefNumber() uint8 { return BLOCK_ITEM_STRING_REF_NUMBER }
+func (c *StringContent) IsCountable() bool   { return true }
+func (c *StringContent) ClockLen() uint64 {
+	// length in UTF-16 code units
+	u16 := utf16.Encode([]rune(c.Data))
+	return uint64(len(u16))
+}
+
+func (c *StringContent) Read(decoder Decoder) error {
+	s, err := decoder.ReadVarString()
+	if err != nil {
+		return err
+	}
+	c.Data = s
+	return nil
+}
+
+func (c *StringContent) Write(encoder Encoder) error {
+	return encoder.WriteVarString(&c.Data)
+}
+
+func (c *StringContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	left, right := splitAsUtf16Str(c.Data, offset)
+	return &StringContent{Data: left}, &StringContent{Data: right}, nil
+}
+
+// splitAsUtf16Str splits a string at a UTF-16 offset
+func splitAsUtf16Str(s string, offset uint64) (string, string) {
+	var utf16Offset uint64
+	var utf8Offset int
+	for _, ch := range s {
+		utf16Offset += uint64(utf16Len(ch))
+		utf8Offset += utf8.RuneLen(ch)
+		if utf16Offset >= offset {
+			break
+		}
+	}
+	return s[:utf8Offset], s[utf8Offset:]
+}
+
+func utf16Len(r rune) int {
+	if r >= 0x10000 {
+		return 2
+	}
+	return 1
+}
+
+// --- EmbedContent ---
+
+type EmbedContent struct {
+	Data Any
+}
+
+func (c *EmbedContent) GetRefNumber() uint8 { return BLOCK_ITEM_EMBED_REF_NUMBER }
+func (c *EmbedContent) IsCountable() bool   { return true }
+func (c *EmbedContent) ClockLen() uint64    { return 1 }
+
+func (c *EmbedContent) Read(decoder Decoder) error {
+	s, err := decoder.ReadVarString()
+	if err != nil {
+		return err
+	}
+	// Embed stores JSON as a string; for now store as StringAny
+	c.Data = StringAny(s)
+	return nil
+}
+
+func (c *EmbedContent) Write(encoder Encoder) error {
+	// Write the Any value as a JSON string
+	s := c.Data.StrVal
+	return encoder.WriteVarString(&s)
+}
+
+func (c *EmbedContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
+}
+
+// --- FormatContent ---
+
+type FormatContent struct {
+	Key   string
+	Value Any
+}
+
+func (c *FormatContent) GetRefNumber() uint8 { return BLOCK_ITEM_FORMAT_REF_NUMBER }
+func (c *FormatContent) IsCountable() bool   { return false }
+func (c *FormatContent) ClockLen() uint64    { return 1 }
+
+func (c *FormatContent) Read(decoder Decoder) error {
+	key, err := decoder.ReadVarString()
+	if err != nil {
+		return err
+	}
+	c.Key = key
+	valStr, err := decoder.ReadVarString()
+	if err != nil {
+		return err
+	}
+	c.Value = StringAny(valStr)
+	return nil
+}
+
+func (c *FormatContent) Write(encoder Encoder) error {
+	if err := encoder.WriteVarString(&c.Key); err != nil {
+		return err
+	}
+	s := c.Value.StrVal
+	return encoder.WriteVarString(&s)
+}
+
+func (c *FormatContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
+}
+
+// --- TypeContent ---
+
+type TypeContent struct {
+	TypeRef YTypeRef
+}
+
+func (c *TypeContent) GetRefNumber() uint8 { return BLOCK_ITEM_TYPE_REF_NUMBER }
+func (c *TypeContent) IsCountable() bool   { return true }
+func (c *TypeContent) ClockLen() uint64    { return 1 }
+
+func (c *TypeContent) Read(decoder Decoder) error {
+	typeRef, err := decoder.ReadVarUint()
+	if err != nil {
+		return err
+	}
+	kind := YTypeKindFromU64(typeRef)
+	if kind == YTypeUnknown {
+		return NewIncompleteDocumentError(fmt.Sprintf("unknown y type: %d", typeRef))
+	}
+	var tagName *string
+	if kind == YTypeXMLElement || kind == YTypeXMLHook {
+		s, err := decoder.ReadVarString()
+		if err != nil {
+			return err
+		}
+		tagName = &s
+	}
+	c.TypeRef = NewYTypeRef(kind, tagName)
+	return nil
+}
+
+func (c *TypeContent) Write(encoder Encoder) error {
+	if err := encoder.WriteVarUint64(uint64(c.TypeRef.Kind)); err != nil {
+		return err
+	}
+	if c.TypeRef.Kind == YTypeXMLElement || c.TypeRef.Kind == YTypeXMLHook {
+		if c.TypeRef.TagName != nil {
+			if err := encoder.WriteVarString(c.TypeRef.TagName); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *TypeContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
+}
+
+// --- AnyContent ---
+
 type AnyContent struct {
+	Data []Any
 }
 
-func (c *AnyContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_ANY_REF_NUMBER
+func (c *AnyContent) GetRefNumber() uint8 { return BLOCK_ITEM_ANY_REF_NUMBER }
+func (c *AnyContent) IsCountable() bool   { return true }
+func (c *AnyContent) ClockLen() uint64    { return uint64(len(c.Data)) }
+
+func (c *AnyContent) Read(decoder Decoder) error {
+	data, err := ReadMultipleAny(decoder)
+	if err != nil {
+		return err
+	}
+	c.Data = data
+	return nil
 }
 
-func (c *AnyContent) IsCountable() bool {
-	return true
+func (c *AnyContent) Write(encoder Encoder) error {
+	return WriteMultipleAny(encoder, c.Data)
 }
 
-type BinaryContent struct{}
-
-func (c *BinaryContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_BINARY_REF_NUMBER
-}
-func (c *BinaryContent) IsCountable() bool {
-	return true
-}
-
-type DeletedContent struct{}
-
-func (c *DeletedContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_DELETED_REF_NUMBER
+func (c *AnyContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	left := make([]Any, offset)
+	copy(left, c.Data[:offset])
+	right := make([]Any, uint64(len(c.Data))-offset)
+	copy(right, c.Data[offset:])
+	return &AnyContent{Data: left}, &AnyContent{Data: right}, nil
 }
 
-func (c *DeletedContent) IsCountable() bool {
-	return false
+// --- DocContent ---
+
+type DocContent struct {
+	Guid string
+	Opts Any
 }
 
-type DocContent struct{}
+func (c *DocContent) GetRefNumber() uint8 { return BLOCK_ITEM_DOC_REF_NUMBER }
+func (c *DocContent) IsCountable() bool   { return true }
+func (c *DocContent) ClockLen() uint64    { return 1 }
 
-func (c *DocContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_DOC_REF_NUMBER
+func (c *DocContent) Read(decoder Decoder) error {
+	guid, err := decoder.ReadVarString()
+	if err != nil {
+		return err
+	}
+	c.Guid = guid
+	opts, err := ReadAny(decoder)
+	if err != nil {
+		return err
+	}
+	c.Opts = opts
+	return nil
 }
 
-func (c *DocContent) IsCountable() bool {
-	return true
+func (c *DocContent) Write(encoder Encoder) error {
+	if err := encoder.WriteVarString(&c.Guid); err != nil {
+		return err
+	}
+	return WriteAny(encoder, c.Opts)
 }
 
-type JsonContent struct{}
-
-func (c *JsonContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_DOC_REF_NUMBER
+func (c *DocContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
 }
 
-func (c *JsonContent) IsCountable() bool {
-	return true
-}
-
-type EmbedContent struct{}
-
-func (c *EmbedContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_EMBED_REF_NUMBER
-}
-
-func (c *EmbedContent) IsCountable() bool {
-	return true
-}
-
-type FormatContent struct{}
-
-func (c *FormatContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_FORMAT_REF_NUMBER
-}
-
-func (c *FormatContent) IsCountable() bool {
-	return false
-}
-
-type StringContent struct{}
-
-func (c *StringContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_STRING_REF_NUMBER
-}
-
-func (c *StringContent) IsCountable() bool {
-	return true
-}
-
-type TypeContent struct{}
-
-func (c *TypeContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_TYPE_REF_NUMBER
-}
-
-func (c *TypeContent) IsCountable() bool {
-	return true
-}
+// --- MoveContent ---
 
 type MoveContent struct{}
 
-func (c *MoveContent) GetRefNumber() uint8 {
-	return BLOCK_ITEM_MOVE_REF_NUMBER
+func (c *MoveContent) GetRefNumber() uint8 { return BLOCK_ITEM_MOVE_REF_NUMBER }
+func (c *MoveContent) IsCountable() bool   { return false }
+func (c *MoveContent) ClockLen() uint64    { return 1 }
+func (c *MoveContent) Read(decoder Decoder) error {
+	return NewIncompleteDocumentError("move content read not supported")
+}
+func (c *MoveContent) Write(encoder Encoder) error {
+	return NewIncompleteDocumentError("move content write not supported")
+}
+func (c *MoveContent) Split(offset uint64) (ItemContent, ItemContent, error) {
+	return nil, nil, NewContentSplitNotSupportError(offset)
 }
 
-func (c *MoveContent) IsCountable() bool {
-	return false
+// ReadContent reads an ItemContent from the decoder based on the tag type
+func ReadContent(decoder Decoder, tagType uint8) (ItemContent, error) {
+	var content ItemContent
+	switch tagType {
+	case BLOCK_ITEM_DELETED_REF_NUMBER:
+		content = &DeletedContent{}
+	case BLOCK_ITEM_JSON_REF_NUMBER:
+		content = &JsonContent{}
+	case BLOCK_ITEM_BINARY_REF_NUMBER:
+		content = &BinaryContent{}
+	case BLOCK_ITEM_STRING_REF_NUMBER:
+		content = &StringContent{}
+	case BLOCK_ITEM_EMBED_REF_NUMBER:
+		content = &EmbedContent{}
+	case BLOCK_ITEM_FORMAT_REF_NUMBER:
+		content = &FormatContent{}
+	case BLOCK_ITEM_TYPE_REF_NUMBER:
+		content = &TypeContent{}
+	case BLOCK_ITEM_ANY_REF_NUMBER:
+		content = &AnyContent{}
+	case BLOCK_ITEM_DOC_REF_NUMBER:
+		content = &DocContent{}
+	default:
+		return nil, NewIncompleteDocumentError(fmt.Sprintf("unknown content type: %d", tagType))
+	}
+	if err := content.Read(decoder); err != nil {
+		return nil, err
+	}
+	return content, nil
 }
 
 const (

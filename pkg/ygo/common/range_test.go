@@ -55,6 +55,17 @@ func TestOrderRange_DiffRange(t *testing.T) {
 	assert.Equal(t, uint64(11), diff[0].End)
 }
 
+func TestOrderRange_PushRange(t *testing.T) {
+	r1 := NewOrderRange(0, 10)
+
+	r1.Push(NewRange(5, 15))
+	assert.Equal(t, r1, NewOrderRange(0, 15))
+
+	r1.Push(NewRange(20, 30))
+	assert.Equal(t, r1, FromVec([]Range{*NewRange(0, 15), *NewRange(20, 30)}))
+}
+
+// ---- static methods ----
 func TestCheckRangeCovered_GivenNotIncludes(t *testing.T) {
 	assert.Equal(t, false, checkRangeCovered(
 		&[]Range{*NewRange(0, 1)},
