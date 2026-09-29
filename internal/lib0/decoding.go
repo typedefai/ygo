@@ -39,12 +39,8 @@ func NewBufferRead(reader io.Reader) BufferRead {
 
 func (r *BufferRead) ReadUint8Array(len uint) ([]uint8, error) {
 	buf := make([]uint8, len)
-	n, err := r.reader.Read(buf)
-	if err != nil {
+	if _, err := io.ReadFull(r.reader, buf); err != nil {
 		return nil, err
-	}
-	if n != int(len) {
-		return nil, fmt.Errorf("unexpected EOF: expected to read %v but only got %v", len, n)
 	}
 	return buf, nil
 }
@@ -111,42 +107,60 @@ func (r *BufferRead) ReadVarUint8Array() ([]uint8, error) {
 	return r.ReadUint8Array(uint(len))
 }
 
-func (r *BufferRead) ReadVarInt() (int64, error) {
+// ReadVarIntWithSign decodes lib0's sign-magnitude VarInt, returning the
+// magnitude and sign bit separately. ReadVarInt collapses the sign into an
+// int64 and therefore cannot represent -0, which lib0 emits for run markers;
+// run-length decoders need this variant.
+func (r *BufferRead) ReadVarIntWithSign() (uint64, bool, error) {
 	firstByte, err := r.ReadUint8()
+	if err != nil {
+		return 0, false, err
+	}
+	mag := uint64(firstByte & 0b0011_1111)
+	neg := firstByte&uint8(0b0100_0000) != 0
+	if firstByte&uint8(0b1000_0000) == 0 {
+		return mag, neg, nil
+	}
+	shift := 6
+	for {
+		b, err := r.ReadUint8()
+		if err != nil {
+			return 0, false, err
+		}
+		mag |= (uint64(b) & 0b0111_1111) << shift
+		shift += 7
+		if b < uint8(0b1000_0000) {
+			return mag, neg, nil
+		}
+		if shift > 70 {
+			return 0, false, errors.New("varint size exceeded length of 70 bits")
+		}
+	}
+}
+
+func (r *BufferRead) ReadVarInt() (int64, error) {
+	mag, neg, err := r.ReadVarIntWithSign()
 	if err != nil {
 		return 0, err
 	}
-	var num int64 = int64(firstByte & uint8(0b0011_1111))
-	isNegative := false
-	if firstByte&uint8(0b0100_0000) > 0 {
-		isNegative = true
+	if neg {
+		return -int64(mag), nil
 	}
-	if firstByte&uint8(0b1000_0000) == 0 {
-		if isNegative {
-			return -num, nil
-		} else {
-			return num, nil
-		}
-	}
-	len := 6
-	for {
-		byte, err := r.ReadUint8()
-		if err != nil {
-			return 0, err
-		}
-		num |= (int64(byte) & int64(0b0111_1111)) << len
-		len += 7
-		if byte < uint8(0b1000_0000) {
-			if isNegative {
-				return -num, nil
-			} else {
-				return num, nil
-			}
-		}
-		if len > 70 {
-			return 0, errors.New("varint size exceeded length of 70 bits")
-		}
-	}
+	return int64(mag), nil
+}
+
+// HasContent reports whether at least one more byte can be read. Used by the
+// RLE decoders, whose final run has no count and extends to the end of the
+// column.
+func (r *BufferRead) HasContent() bool {
+	_, err := r.reader.Peek(1)
+	return err == nil
+}
+
+// ReadRemaining drains the reader. Used to split a length-prefixed column from
+// the raw trailing bytes of a V2 update.
+func (r *BufferRead) ReadRemaining() ([]byte, error) {
+	return io.ReadAll(r.reader)
 }
 
 func (r *BufferRead) ReadVarString() (string, error) {
@@ -174,7 +188,11 @@ func (r *BufferRead) ReadAny() (any, error) {
 	case 123:
 		return r.ReadFloat64()
 	case 122:
-		return r.ReadInt64()
+		v, err := r.ReadInt64()
+		if err != nil {
+			return nil, err
+		}
+		return BigInt(v), nil
 	case 121:
 		return false, nil
 	case 120:
@@ -182,12 +200,12 @@ func (r *BufferRead) ReadAny() (any, error) {
 	case 119:
 		return r.ReadVarString()
 	case 118:
-		len, err := r.ReadVarInt()
+		n, err := r.ReadVarUint()
 		if err != nil {
 			return nil, err
 		}
-		obj := map[string]any{}
-		for _ = range len {
+		obj := make(map[string]any, n)
+		for range n {
 			key, err := r.ReadVarString()
 			if err != nil {
 				return nil, err
@@ -200,12 +218,12 @@ func (r *BufferRead) ReadAny() (any, error) {
 		}
 		return obj, nil
 	case 117:
-		len, err := r.ReadVarInt()
+		n, err := r.ReadVarUint()
 		if err != nil {
 			return nil, err
 		}
-		arr := make([]any, len)
-		for i := range len {
+		arr := make([]any, n)
+		for i := range n {
 			val, err := r.ReadAny()
 			if err != nil {
 				return nil, err

@@ -38,6 +38,9 @@ type Item struct {
 	Parent      *Parent
 	ParentSub   *string
 	Info        ItemFlags
+
+	// parentType is the live containing type, resolved during integration.
+	parentType *abstractType
 }
 
 func (i *Item) Contains(id ID) bool {
@@ -85,12 +88,18 @@ const (
 )
 
 func (i *Item) ItemInfo() uint8 {
+	return i.ItemInfoFor(i.Origin, i.RightOrigin)
+}
+
+// ItemInfoFor computes the info byte for the given effective origins (offset
+// encoding re-bases the origin).
+func (i *Item) ItemInfoFor(origin, rightOrigin *ID) uint8 {
 	var info uint8 = 0
-	if i.Origin != nil {
+	if origin != nil {
 		info |= HAS_ORIGIN
 	}
 
-	if i.RightOrigin != nil {
+	if rightOrigin != nil {
 		info |= HAS_RIGHT_ORIGIN
 	}
 
@@ -184,22 +193,30 @@ func ReadItem(decoder Decoder, id ID, info uint8, first5Bit uint8) (*Item, error
 	return item, nil
 }
 
-// WriteItem writes the item to the encoder
-func (i *Item) WriteItem(encoder Encoder) error {
-	info := i.ItemInfo()
+// WriteItem writes the item to the encoder. offset > 0 encodes only the
+// suffix starting at that clock offset (Yjs Item.write(encoder, offset)); the
+// origin is then re-based to this item's last known id.
+func (i *Item) WriteItem(encoder Encoder, offset uint64) error {
+	origin := i.Origin
+	rightOrigin := i.RightOrigin
+	if offset > 0 {
+		oc := i.ID.Clock + offset - 1
+		origin = &ID{Client: i.ID.Client, Clock: oc}
+	}
+	info := i.ItemInfoFor(origin, rightOrigin)
 	hasNotSibling := info&HAS_SIBLING == 0
 
 	if err := encoder.WriteInfo(info); err != nil {
 		return err
 	}
 
-	if i.Origin != nil {
-		if err := encoder.WriteLeftId(*i.Origin); err != nil {
+	if origin != nil {
+		if err := encoder.WriteLeftId(*origin); err != nil {
 			return err
 		}
 	}
-	if i.RightOrigin != nil {
-		if err := encoder.WriteRightId(*i.RightOrigin); err != nil {
+	if rightOrigin != nil {
+		if err := encoder.WriteRightId(*rightOrigin); err != nil {
 			return err
 		}
 	}
@@ -231,51 +248,39 @@ func (i *Item) WriteItem(encoder Encoder) error {
 		}
 	}
 
-	return i.Content.Write(encoder)
+	return i.Content.Write(encoder, offset)
 }
 
-// SplitAt splits the item at the given offset
-func (i *Item) SplitAt(offset uint64) (*Item, *Item, error) {
+// SplitAt splits the item at offset in place: the receiver becomes the left
+// half (keeping its identity so parent.start/map pointers stay valid) and the
+// new right half is returned, mirroring Yjs splitItem.
+func (i *Item) SplitAt(offset uint64) (*Item, error) {
 	leftContent, rightContent, err := i.Content.Split(offset)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	rightID := ID{Client: i.ID.Client, Clock: i.ID.Clock + offset}
-
-	leftItem := &Item{
-		ID:          i.ID,
-		Origin:      i.Origin,
-		RightOrigin: i.RightOrigin,
-		Parent:      i.Parent,
-		ParentSub:   i.ParentSub,
-		Content:     leftContent,
-		Info:        NewItemFlags(0),
-	}
-	if leftContent.IsCountable() {
-		leftItem.Info.SetCountable()
-	}
-	if i.IsDeleted() {
-		leftItem.Info.SetDeleted()
-	}
-	if i.Info.IsKeep() {
-		leftItem.Info.Set(ITEM_FLAG_KEEP)
+		return nil, err
 	}
 
 	rightItem := &Item{
-		ID:          rightID,
-		Origin:      i.Origin,
+		ID:          ID{Client: i.ID.Client, Clock: i.ID.Clock + offset},
+		Origin:      &ID{Client: i.ID.Client, Clock: i.ID.Clock + offset - 1},
 		RightOrigin: i.RightOrigin,
 		Parent:      i.Parent,
 		ParentSub:   i.ParentSub,
 		Content:     rightContent,
-		Info:        NewItemFlags(0),
+		Info:        i.Info,
+		parentType:  i.parentType,
 	}
-	if rightContent.IsCountable() {
-		rightItem.Info.SetCountable()
+	// The halves inherit the original's neighbours; repoint the right neighbour.
+	rightItem.Right = i.Right
+	if i.Right != nil {
+		i.Right.Left = rightItem
 	}
+	rightItem.Left = i
 
-	return leftItem, rightItem, nil
+	i.Content = leftContent
+	i.Right = rightItem
+
+	return rightItem, nil
 }
 
 type GC struct {
@@ -291,8 +296,12 @@ type ItemContent interface {
 	IsCountable() bool
 	ClockLen() uint64
 	Read(decoder Decoder) error
-	Write(encoder Encoder) error
+	Write(encoder Encoder, offset uint64) error
 	Split(offset uint64) (ItemContent, ItemContent, error)
+	Splice(offset uint64) ItemContent
+	Integrate(txn *Transaction, item *Item)
+	Delete(txn *Transaction)
+	MergeWith(right ItemContent) bool
 }
 
 // YTypeKind represents the kind of Y type
@@ -366,7 +375,7 @@ func (c *DeletedContent) IsCountable() bool   { return false }
 func (c *DeletedContent) ClockLen() uint64    { return c.Len }
 
 func (c *DeletedContent) Read(decoder Decoder) error {
-	length, err := decoder.ReadVarUint()
+	length, err := decoder.ReadLen()
 	if err != nil {
 		return err
 	}
@@ -374,8 +383,8 @@ func (c *DeletedContent) Read(decoder Decoder) error {
 	return nil
 }
 
-func (c *DeletedContent) Write(encoder Encoder) error {
-	return encoder.WriteVarUint64(c.Len)
+func (c *DeletedContent) Write(encoder Encoder, offset uint64) error {
+	return encoder.WriteLen(c.Len - offset)
 }
 
 func (c *DeletedContent) Split(offset uint64) (ItemContent, ItemContent, error) {
@@ -384,8 +393,11 @@ func (c *DeletedContent) Split(offset uint64) (ItemContent, ItemContent, error) 
 
 // --- JsonContent ---
 
+// JsonContent mirrors Yjs ContentJSON (wire tag 2): a countable run of
+// arbitrary lib0 Any values, encoded as VarUint(count) followed by count
+// Any payloads. Each element is one clock unit.
 type JsonContent struct {
-	Data []string // "undefined" represented as-is
+	Data []Any
 }
 
 func (c *JsonContent) GetRefNumber() uint8 { return BLOCK_ITEM_JSON_REF_NUMBER }
@@ -393,27 +405,20 @@ func (c *JsonContent) IsCountable() bool   { return true }
 func (c *JsonContent) ClockLen() uint64    { return uint64(len(c.Data)) }
 
 func (c *JsonContent) Read(decoder Decoder) error {
-	length, err := decoder.ReadVarUint()
+	data, err := ReadMultipleAny(decoder)
 	if err != nil {
 		return err
 	}
-	c.Data = make([]string, length)
-	for i := uint64(0); i < length; i++ {
-		s, err := decoder.ReadVarString()
-		if err != nil {
-			return err
-		}
-		c.Data[i] = s
-	}
+	c.Data = data
 	return nil
 }
 
-func (c *JsonContent) Write(encoder Encoder) error {
-	if err := encoder.WriteVarUint64(uint64(len(c.Data))); err != nil {
+func (c *JsonContent) Write(encoder Encoder, offset uint64) error {
+	if err := encoder.WriteLen(uint64(len(c.Data)) - offset); err != nil {
 		return err
 	}
-	for _, s := range c.Data {
-		if err := encoder.WriteVarString(&s); err != nil {
+	for _, a := range c.Data[offset:] {
+		if err := encoder.WriteAnyValue(a); err != nil {
 			return err
 		}
 	}
@@ -421,10 +426,11 @@ func (c *JsonContent) Write(encoder Encoder) error {
 }
 
 func (c *JsonContent) Split(offset uint64) (ItemContent, ItemContent, error) {
-	left := c.Data[:offset]
-	right := c.Data[offset:]
-	return &JsonContent{Data: append([]string{}, left...)},
-		&JsonContent{Data: append([]string{}, right...)}, nil
+	left := make([]Any, offset)
+	copy(left, c.Data[:offset])
+	right := make([]Any, uint64(len(c.Data))-offset)
+	copy(right, c.Data[offset:])
+	return &JsonContent{Data: left}, &JsonContent{Data: right}, nil
 }
 
 // --- BinaryContent ---
@@ -446,7 +452,7 @@ func (c *BinaryContent) Read(decoder Decoder) error {
 	return nil
 }
 
-func (c *BinaryContent) Write(encoder Encoder) error {
+func (c *BinaryContent) Write(encoder Encoder, _ uint64) error {
 	return encoder.WriteVarUint8Array(c.Data)
 }
 
@@ -477,8 +483,12 @@ func (c *StringContent) Read(decoder Decoder) error {
 	return nil
 }
 
-func (c *StringContent) Write(encoder Encoder) error {
-	return encoder.WriteVarString(&c.Data)
+func (c *StringContent) Write(encoder Encoder, offset uint64) error {
+	s := c.Data
+	if offset > 0 {
+		_, s = splitAsUtf16Str(c.Data, offset)
+	}
+	return encoder.WriteVarString(&s)
 }
 
 func (c *StringContent) Split(offset uint64) (ItemContent, ItemContent, error) {
@@ -518,19 +528,17 @@ func (c *EmbedContent) IsCountable() bool   { return true }
 func (c *EmbedContent) ClockLen() uint64    { return 1 }
 
 func (c *EmbedContent) Read(decoder Decoder) error {
-	s, err := decoder.ReadVarString()
+	// V1: legacy JSON text; V2: lib0 Any. Both route through ReadJson.
+	v, err := decoder.ReadJson()
 	if err != nil {
 		return err
 	}
-	// Embed stores JSON as a string; for now store as StringAny
-	c.Data = StringAny(s)
+	c.Data = v
 	return nil
 }
 
-func (c *EmbedContent) Write(encoder Encoder) error {
-	// Write the Any value as a JSON string
-	s := c.Data.StrVal
-	return encoder.WriteVarString(&s)
+func (c *EmbedContent) Write(encoder Encoder, _ uint64) error {
+	return encoder.WriteJson(c.Data)
 }
 
 func (c *EmbedContent) Split(offset uint64) (ItemContent, ItemContent, error) {
@@ -549,25 +557,24 @@ func (c *FormatContent) IsCountable() bool   { return false }
 func (c *FormatContent) ClockLen() uint64    { return 1 }
 
 func (c *FormatContent) Read(decoder Decoder) error {
-	key, err := decoder.ReadVarString()
+	key, err := decoder.ReadKey()
 	if err != nil {
 		return err
 	}
-	c.Key = key
-	valStr, err := decoder.ReadVarString()
+	c.Key = *key
+	val, err := decoder.ReadJson()
 	if err != nil {
 		return err
 	}
-	c.Value = StringAny(valStr)
+	c.Value = val
 	return nil
 }
 
-func (c *FormatContent) Write(encoder Encoder) error {
-	if err := encoder.WriteVarString(&c.Key); err != nil {
+func (c *FormatContent) Write(encoder Encoder, _ uint64) error {
+	if err := encoder.WriteKey(&c.Key); err != nil {
 		return err
 	}
-	s := c.Value.StrVal
-	return encoder.WriteVarString(&s)
+	return encoder.WriteJson(c.Value)
 }
 
 func (c *FormatContent) Split(offset uint64) (ItemContent, ItemContent, error) {
@@ -578,6 +585,8 @@ func (c *FormatContent) Split(offset uint64) (ItemContent, ItemContent, error) {
 
 type TypeContent struct {
 	TypeRef YTypeRef
+	// typ is the live nested type, bound on integration.
+	typ *abstractType
 }
 
 func (c *TypeContent) GetRefNumber() uint8 { return BLOCK_ITEM_TYPE_REF_NUMBER }
@@ -585,33 +594,34 @@ func (c *TypeContent) IsCountable() bool   { return true }
 func (c *TypeContent) ClockLen() uint64    { return 1 }
 
 func (c *TypeContent) Read(decoder Decoder) error {
-	typeRef, err := decoder.ReadVarUint()
+	typeRef, err := decoder.ReadTypeRef()
 	if err != nil {
 		return err
 	}
-	kind := YTypeKindFromU64(typeRef)
+	kind := YTypeKindFromU64(uint64(typeRef))
 	if kind == YTypeUnknown {
 		return NewIncompleteDocumentError(fmt.Sprintf("unknown y type: %d", typeRef))
 	}
 	var tagName *string
 	if kind == YTypeXMLElement || kind == YTypeXMLHook {
-		s, err := decoder.ReadVarString()
+		// YXmlElement._write/readYXmlElement use writeKey/readKey, not the
+		// generic string path.
+		tagName, err = decoder.ReadKey()
 		if err != nil {
 			return err
 		}
-		tagName = &s
 	}
 	c.TypeRef = NewYTypeRef(kind, tagName)
 	return nil
 }
 
-func (c *TypeContent) Write(encoder Encoder) error {
-	if err := encoder.WriteVarUint64(uint64(c.TypeRef.Kind)); err != nil {
+func (c *TypeContent) Write(encoder Encoder, _ uint64) error {
+	if err := encoder.WriteTypeRef(uint8(c.TypeRef.Kind)); err != nil {
 		return err
 	}
 	if c.TypeRef.Kind == YTypeXMLElement || c.TypeRef.Kind == YTypeXMLHook {
 		if c.TypeRef.TagName != nil {
-			if err := encoder.WriteVarString(c.TypeRef.TagName); err != nil {
+			if err := encoder.WriteKey(c.TypeRef.TagName); err != nil {
 				return err
 			}
 		}
@@ -642,8 +652,16 @@ func (c *AnyContent) Read(decoder Decoder) error {
 	return nil
 }
 
-func (c *AnyContent) Write(encoder Encoder) error {
-	return WriteMultipleAny(encoder, c.Data)
+func (c *AnyContent) Write(encoder Encoder, offset uint64) error {
+	if err := encoder.WriteLen(uint64(len(c.Data)) - offset); err != nil {
+		return err
+	}
+	for _, a := range c.Data[offset:] {
+		if err := encoder.WriteAnyValue(a); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *AnyContent) Split(offset uint64) (ItemContent, ItemContent, error) {
@@ -679,7 +697,7 @@ func (c *DocContent) Read(decoder Decoder) error {
 	return nil
 }
 
-func (c *DocContent) Write(encoder Encoder) error {
+func (c *DocContent) Write(encoder Encoder, _ uint64) error {
 	if err := encoder.WriteVarString(&c.Guid); err != nil {
 		return err
 	}
@@ -700,7 +718,7 @@ func (c *MoveContent) ClockLen() uint64    { return 1 }
 func (c *MoveContent) Read(decoder Decoder) error {
 	return NewIncompleteDocumentError("move content read not supported")
 }
-func (c *MoveContent) Write(encoder Encoder) error {
+func (c *MoveContent) Write(encoder Encoder, _ uint64) error {
 	return NewIncompleteDocumentError("move content write not supported")
 }
 func (c *MoveContent) Split(offset uint64) (ItemContent, ItemContent, error) {

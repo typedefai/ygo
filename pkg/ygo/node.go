@@ -127,21 +127,24 @@ func ReadNode(decoder Decoder, id ID) (Node, error) {
 	}
 }
 
-// WriteNode writes the Node to the encoder.
-func (n *Node) WriteNode(encoder Encoder) error {
+// WriteNode writes the Node to the encoder. offset > 0 writes only the suffix
+// from that clock offset (used by state-vector diff encoding).
+func (n *Node) WriteNode(encoder Encoder, offset uint64) error {
 	switch n.tag {
 	case nodeTagGC:
+		// GC uses writeLen (the len column in V2); Skip writes a plain VarUint
+		// to rest because its length can't use predictable-length encoding.
 		if err := encoder.WriteInfo(0); err != nil {
 			return err
 		}
-		return encoder.WriteVarUint64(n.gc.Len)
+		return encoder.WriteLen(n.gc.Len - offset)
 	case nodeTagSkip:
 		if err := encoder.WriteInfo(10); err != nil {
 			return err
 		}
-		return encoder.WriteVarUint64(n.skip.Len)
+		return encoder.WriteVarUint64(n.skip.Len - offset)
 	case nodeTagItem:
-		return n.item.WriteItem(encoder)
+		return n.item.WriteItem(encoder, offset)
 	}
 	return nil
 }

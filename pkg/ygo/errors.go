@@ -18,6 +18,7 @@ const (
 	ErrTypeCastError
 	ErrUpdateNotFullyConsumed
 	ErrInvalidWriteBuffer
+	ErrInvalidDeleteSetLen
 )
 
 func (e *YgoError) Error() string {
@@ -42,4 +43,8 @@ func NewParentNotFoundError() error {
 
 func NewUpdateNotFullyConsumedError(remaining int) error {
 	return &YgoError{Code: ErrUpdateNotFullyConsumed, Message: fmt.Sprintf("update not fully consumed, %d bytes remaining", remaining)}
+}
+
+func NewInvalidDeleteSetLenError() error {
+	return &YgoError{Code: ErrInvalidDeleteSetLen, Message: "delete set range length must be > 0"}
 }

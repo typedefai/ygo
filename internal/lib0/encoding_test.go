@@ -3,6 +3,7 @@ package lib0_test
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"testing"
 
 	"gotest.tools/assert"
@@ -505,10 +506,12 @@ func TestWrite_any(t *testing.T) {
 		{"Hello world!", "770c48656c6c6f20776f726c6421"},
 		{[]uint8{0x2a, 0x3b, 0x4c, 0x9d}, "74042a3b4c9d"},
 		{map[string]any{}, "7600"},
+		// Keys are emitted in sorted order (Go maps are unordered; the decoded
+		// object is identical regardless of key order).
 		{map[string]any{
 			"name": "J. Mes",
 			"age":  18,
-		}, "7602046e616d6577064a2e204d6573036167657d12"},
+		}, "7602036167657d12046e616d6577064a2e204d6573"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("write var any:%v = %v", tt.a, tt.expected), func(t *testing.T) {
@@ -529,9 +532,10 @@ func TestWrite_anyNumber(t *testing.T) {
 	}{
 		{2147483647, "7dbfffffff0f"},
 		{-2147483647, "7dffffffff0f"},
-		// incompatible with Yjs, which uses float32 to encode: 7ccf000000
-		// but same with Yrs
-		{-2147483648, "7dc080808010"},
+		// lib0's threshold is |data| <= BITS31, so -2^31 is out of integer
+		// range and takes the float32 path (tag 124) — verified against
+		// lib0@0.2.99 by testutil/gen_lib0_vectors.js.
+		{-2147483648, "7ccf000000"},
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("write var any:%v = %v", tt.a, tt.expected), func(t *testing.T) {
@@ -539,6 +543,62 @@ func TestWrite_anyNumber(t *testing.T) {
 
 			err := w.WriteAny(tt.a)
 
+			assert.NilError(t, err)
+			assert.Equal(t, tt.expected, hex.EncodeToString(w.ToBytes()))
+		})
+	}
+}
+
+// TestWrite_anyNumberDispatch pins lib0's value-based number dispatch:
+// integer in int32 range -> 125; otherwise float32 if lossless -> 124, else
+// float64 -> 123; beyond float64's exact integer range -> BigInt 122.
+func TestWrite_anyNumberDispatch(t *testing.T) {
+	var tests = []struct {
+		name     string
+		a        any
+		expected string
+	}{
+		{"int8_neg", int8(-1), "7d41"},
+		{"int32_min", int32(math.MinInt32), "7ccf000000"},
+		{"int64_2p40", int64(1 << 40), "7c53800000"},
+		{"float64_2p40", float64(1 << 40), "7c53800000"},
+		{"int64_neg2p40", int64(-(1 << 40)), "7cd3800000"},
+		{"int64_2p40p1", int64((1 << 40) + 1), "7b4270000000001000"},
+		{"float32_1p5", float32(1.5), "7c3fc00000"},
+		{"float64_1p5", float64(1.5), "7c3fc00000"},
+		{"float64_1p1", float64(1.1), "7b3ff199999999999a"},
+		{"int64_2p53", int64(1 << 53), "7c5a000000"},
+		{"int64_2p53p1", int64((1 << 53) + 1), "7a0020000000000001"},
+		{"bigint_neg1", lib0.BigInt(-1), "7affffffffffffffff"},
+		{"uint64_max", uint64(math.MaxUint64), "7b43f0000000000000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := lib0.NewBufferWrite()
+			err := w.WriteAny(tt.a)
+			assert.NilError(t, err)
+			assert.Equal(t, tt.expected, hex.EncodeToString(w.ToBytes()))
+		})
+	}
+}
+
+// TestWriteNegVarUint pins the sign-magnitude negative encoding used by
+// UIntOptRle runs, including the -0 case that plain WriteVarInt64 cannot express.
+func TestWriteNegVarUint(t *testing.T) {
+	var tests = []struct {
+		v        uint64
+		expected string
+	}{
+		{0, "40"},    // -0
+		{5, "45"},    // -5
+		{63, "7f"},   // -63
+		{64, "c001"}, // -64
+		{128, "c002"},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("neg varuint:%d", tt.v), func(t *testing.T) {
+			w := lib0.NewBufferWrite()
+			err := w.WriteNegVarUint(tt.v)
 			assert.NilError(t, err)
 			assert.Equal(t, tt.expected, hex.EncodeToString(w.ToBytes()))
 		})

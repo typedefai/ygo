@@ -2,6 +2,7 @@ package ygo_test
 
 import (
 	"bytes"
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,7 +15,7 @@ func contentRoundTrip(t *testing.T, content ygo.ItemContent) {
 	encoder := ygo.NewEncoderV1()
 	err := encoder.WriteUint8(content.GetRefNumber())
 	require.NoError(t, err)
-	err = content.Write(&encoder)
+	err = content.Write(&encoder, 0)
 	require.NoError(t, err)
 
 	data := encoder.ToBytes()
@@ -46,19 +47,38 @@ func TestDeletedContent_Split(t *testing.T) {
 }
 
 func TestJsonContent_RoundTrip(t *testing.T) {
-	c := &ygo.JsonContent{Data: []string{"hello", "undefined", "world"}}
+	c := &ygo.JsonContent{Data: []ygo.Any{
+		ygo.StringAny("hello"),
+		ygo.UndefinedAny(),
+		ygo.IntegerAny(42),
+	}}
 	assert.Equal(t, uint8(2), c.GetRefNumber())
 	assert.Equal(t, true, c.IsCountable())
 	assert.Equal(t, uint64(3), c.ClockLen())
 	contentRoundTrip(t, c)
 }
 
+// TestJsonContent_WireLayout pins Yjs ContentJSON encoding: each element is a
+// lib0 Any payload, not a VarString. Regression guard for the previous
+// `[]string` + WriteVarString implementation.
+func TestJsonContent_WireLayout(t *testing.T) {
+	c := &ygo.JsonContent{Data: []ygo.Any{ygo.StringAny("a")}}
+	e := ygo.NewEncoderV1()
+	require.NoError(t, e.WriteUint8(c.GetRefNumber()))
+	require.NoError(t, c.Write(&e, 0))
+	assert.Equal(t, "0201770161", hex.EncodeToString(e.ToBytes()))
+}
+
 func TestJsonContent_Split(t *testing.T) {
-	c := &ygo.JsonContent{Data: []string{"a", "b", "c", "d"}}
+	c := &ygo.JsonContent{Data: []ygo.Any{
+		ygo.StringAny("a"), ygo.StringAny("b"), ygo.StringAny("c"), ygo.StringAny("d"),
+	}}
 	left, right, err := c.Split(2)
 	require.NoError(t, err)
 	assert.Equal(t, uint64(2), left.ClockLen())
 	assert.Equal(t, uint64(2), right.ClockLen())
+	assert.Equal(t, ygo.StringAny("a"), left.(*ygo.JsonContent).Data[0])
+	assert.Equal(t, ygo.StringAny("c"), right.(*ygo.JsonContent).Data[0])
 }
 
 func TestBinaryContent_RoundTrip(t *testing.T) {

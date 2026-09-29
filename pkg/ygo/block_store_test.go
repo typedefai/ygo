@@ -1,6 +1,7 @@
 package ygo
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,12 +86,14 @@ func TestStateVectorMethods(t *testing.T) {
 }
 
 func TestStateVectorEncode(t *testing.T) {
+	// Lib0 writeStateVector layout: VarUint(count), then sorted (client, clock)
+	// VarUint pairs. A large client ID must be a VarUint, not a VarInt.
 	sv := NewStateVector()
+	sv.SetMax(300, 5)
 	sv.SetMax(1, 2)
-	sv.SetMax(2, 3)
 
 	enc := NewEncoderV1()
 	err := sv.Encode(&enc)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, enc.ToBytes())
+	assert.Equal(t, "020102ac0205", hex.EncodeToString(enc.ToBytes()))
 }

@@ -51,7 +51,7 @@ func TestNodeWriteReadGCAndSkip(t *testing.T) {
 	}
 	for _, n := range nodes {
 		enc := NewEncoderV1()
-		err := n.WriteNode(&enc)
+		err := n.WriteNode(&enc, 0)
 		require.NoError(t, err)
 
 		dec := NewDecoderV1(bytes.NewReader(enc.ToBytes()))
@@ -72,7 +72,7 @@ func TestNodeWriteReadItem(t *testing.T) {
 	n := NewItemNode(i)
 
 	enc := NewEncoderV1()
-	err := n.WriteNode(&enc)
+	err := n.WriteNode(&enc, 0)
 	require.NoError(t, err)
 
 	dec := NewDecoderV1(bytes.NewReader(enc.ToBytes()))

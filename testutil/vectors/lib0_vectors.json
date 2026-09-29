@@ -1,0 +1,591 @@
+{
+  "varuint": [
+    {
+      "value": "0",
+      "hex": "00"
+    },
+    {
+      "value": "1",
+      "hex": "01"
+    },
+    {
+      "value": "63",
+      "hex": "3f"
+    },
+    {
+      "value": "64",
+      "hex": "40"
+    },
+    {
+      "value": "127",
+      "hex": "7f"
+    },
+    {
+      "value": "128",
+      "hex": "8001"
+    },
+    {
+      "value": "255",
+      "hex": "ff01"
+    },
+    {
+      "value": "300",
+      "hex": "ac02"
+    },
+    {
+      "value": "1000",
+      "hex": "e807"
+    },
+    {
+      "value": "65535",
+      "hex": "ffff03"
+    },
+    {
+      "value": "4294967295",
+      "hex": "ffffffff0f"
+    },
+    {
+      "value": "4294900000",
+      "hex": "a0f2fbff0f"
+    },
+    {
+      "value": "9007199254740991",
+      "hex": "ffffffffffffff0f"
+    }
+  ],
+  "varint": [
+    {
+      "value": "0",
+      "hex": "00"
+    },
+    {
+      "value": "1",
+      "hex": "01"
+    },
+    {
+      "value": "-1",
+      "hex": "41"
+    },
+    {
+      "value": "5",
+      "hex": "05"
+    },
+    {
+      "value": "-5",
+      "hex": "45"
+    },
+    {
+      "value": "63",
+      "hex": "3f"
+    },
+    {
+      "value": "-63",
+      "hex": "7f"
+    },
+    {
+      "value": "64",
+      "hex": "8001"
+    },
+    {
+      "value": "-64",
+      "hex": "c001"
+    },
+    {
+      "value": "127",
+      "hex": "bf01"
+    },
+    {
+      "value": "-127",
+      "hex": "ff01"
+    },
+    {
+      "value": "128",
+      "hex": "8002"
+    },
+    {
+      "value": "-128",
+      "hex": "c002"
+    },
+    {
+      "value": "2147483647",
+      "hex": "bfffffff0f"
+    },
+    {
+      "value": "-2147483647",
+      "hex": "ffffffff0f"
+    },
+    {
+      "value": "-2147483648",
+      "hex": "c080808010"
+    },
+    {
+      "value": "-0",
+      "hex": "40"
+    }
+  ],
+  "varstring": [
+    {
+      "value": "",
+      "hex": "00"
+    },
+    {
+      "value": "abc",
+      "hex": "03616263"
+    },
+    {
+      "value": "Hello World!",
+      "hex": "0c48656c6c6f20576f726c6421"
+    },
+    {
+      "value": "Hello, 中国！𐐷𐐷𐐷",
+      "hex": "1c48656c6c6f2c20e4b8ade59bbdefbc81f09090b7f09090b7f09090b7"
+    }
+  ],
+  "varuint8array": [
+    {
+      "value": "",
+      "hex": "00"
+    },
+    {
+      "value": "000180fe",
+      "hex": "04000180fe"
+    },
+    {
+      "value": "2a3b4c9d",
+      "hex": "042a3b4c9d"
+    }
+  ],
+  "any": [
+    {
+      "name": "undefined",
+      "go": {
+        "t": "undefined"
+      },
+      "skipGo": false,
+      "hex": "7f"
+    },
+    {
+      "name": "null",
+      "go": {
+        "t": "null"
+      },
+      "skipGo": false,
+      "hex": "7e"
+    },
+    {
+      "name": "true",
+      "go": {
+        "t": "true"
+      },
+      "skipGo": false,
+      "hex": "78"
+    },
+    {
+      "name": "false",
+      "go": {
+        "t": "false"
+      },
+      "skipGo": false,
+      "hex": "79"
+    },
+    {
+      "name": "int0",
+      "go": {
+        "t": "int",
+        "v": 0
+      },
+      "skipGo": false,
+      "hex": "7d00"
+    },
+    {
+      "name": "int5",
+      "go": {
+        "t": "int",
+        "v": 5
+      },
+      "skipGo": false,
+      "hex": "7d05"
+    },
+    {
+      "name": "intneg5",
+      "go": {
+        "t": "int",
+        "v": -5
+      },
+      "skipGo": false,
+      "hex": "7d45"
+    },
+    {
+      "name": "int_max",
+      "go": {
+        "t": "int",
+        "v": 2147483647
+      },
+      "skipGo": false,
+      "hex": "7dbfffffff0f"
+    },
+    {
+      "name": "int_min",
+      "go": {
+        "t": "int",
+        "v": -2147483648
+      },
+      "skipGo": false,
+      "hex": "7ccf000000"
+    },
+    {
+      "name": "negzero",
+      "go": null,
+      "skipGo": true,
+      "note": "JS -0 → tag125 + VarInt(-0); no int64 equivalent",
+      "hex": "7d40"
+    },
+    {
+      "name": "float32_exact",
+      "go": {
+        "t": "number",
+        "v": 1.5
+      },
+      "skipGo": false,
+      "hex": "7c3fc00000"
+    },
+    {
+      "name": "float64_only",
+      "go": {
+        "t": "number",
+        "v": 1.1
+      },
+      "skipGo": false,
+      "hex": "7b3ff199999999999a"
+    },
+    {
+      "name": "int_beyond_int32_pow2",
+      "go": {
+        "t": "number",
+        "v": 1099511627776
+      },
+      "skipGo": false,
+      "hex": "7c53800000"
+    },
+    {
+      "name": "int_beyond_int32_odd",
+      "go": {
+        "t": "number",
+        "v": 1099511627777
+      },
+      "skipGo": false,
+      "hex": "7b4270000000001000"
+    },
+    {
+      "name": "int_safe_max",
+      "go": {
+        "t": "number",
+        "v": 9007199254740992
+      },
+      "skipGo": false,
+      "hex": "7c5a000000"
+    },
+    {
+      "name": "int_unsafe",
+      "go": {
+        "t": "number",
+        "v": 9007199254740992
+      },
+      "skipGo": true,
+      "note": "JS Number loses precision; Go emits BigInt instead",
+      "hex": "7c5a000000"
+    },
+    {
+      "name": "bigint",
+      "go": {
+        "t": "bigint",
+        "v": 123
+      },
+      "skipGo": false,
+      "hex": "7a000000000000007b"
+    },
+    {
+      "name": "bigint_neg",
+      "go": {
+        "t": "bigint",
+        "v": -1
+      },
+      "skipGo": false,
+      "hex": "7affffffffffffffff"
+    },
+    {
+      "name": "string",
+      "go": {
+        "t": "string",
+        "v": "J. Mes"
+      },
+      "skipGo": false,
+      "hex": "77064a2e204d6573"
+    },
+    {
+      "name": "string_unicode",
+      "go": {
+        "t": "string",
+        "v": "你好𐐷"
+      },
+      "skipGo": false,
+      "hex": "770ae4bda0e5a5bdf09090b7"
+    },
+    {
+      "name": "bytes",
+      "go": {
+        "t": "bytes",
+        "hex": "2a3b4c9d"
+      },
+      "skipGo": false,
+      "hex": "74042a3b4c9d"
+    },
+    {
+      "name": "array",
+      "go": {
+        "t": "array",
+        "v": [
+          {
+            "t": "undefined"
+          },
+          {
+            "t": "int",
+            "v": 255
+          },
+          {
+            "t": "int",
+            "v": -2147483648
+          }
+        ]
+      },
+      "skipGo": false,
+      "hex": "75037f7dbf037ccf000000"
+    },
+    {
+      "name": "array_nested",
+      "go": {
+        "t": "array",
+        "v": [
+          {
+            "t": "int",
+            "v": 1
+          },
+          {
+            "t": "array",
+            "v": [
+              {
+                "t": "int",
+                "v": 2
+              },
+              {
+                "t": "string",
+                "v": "x"
+              }
+            ]
+          }
+        ]
+      },
+      "skipGo": false,
+      "hex": "75027d0175027d02770178"
+    },
+    {
+      "name": "object",
+      "go": {
+        "t": "object",
+        "v": {
+          "age": {
+            "t": "int",
+            "v": 18
+          },
+          "name": {
+            "t": "string",
+            "v": "J. Mes"
+          }
+        }
+      },
+      "skipGo": false,
+      "hex": "7602036167657d12046e616d6577064a2e204d6573"
+    }
+  ],
+  "rle": [
+    {
+      "value": [],
+      "hex": ""
+    },
+    {
+      "value": [
+        1,
+        1,
+        1,
+        7
+      ],
+      "hex": "010207"
+    },
+    {
+      "value": [
+        1,
+        2,
+        3,
+        255
+      ],
+      "hex": "010002000300ff"
+    },
+    {
+      "value": [
+        0,
+        0,
+        0
+      ],
+      "hex": "00"
+    },
+    {
+      "value": [
+        5,
+        5,
+        5,
+        5,
+        9
+      ],
+      "hex": "050309"
+    }
+  ],
+  "uintopt": [
+    {
+      "value": [],
+      "hex": ""
+    },
+    {
+      "value": [
+        1,
+        2,
+        3,
+        3,
+        3
+      ],
+      "hex": "01024301"
+    },
+    {
+      "value": [
+        0,
+        0
+      ],
+      "hex": "4000"
+    },
+    {
+      "value": [
+        0,
+        0,
+        0
+      ],
+      "hex": "4001"
+    },
+    {
+      "value": [
+        0,
+        1,
+        1,
+        0
+      ],
+      "hex": "00410000"
+    },
+    {
+      "value": [
+        1,
+        2,
+        3,
+        65535,
+        18273719133
+      ],
+      "hex": "010203bfff079dcd96938801"
+    }
+  ],
+  "intdiff": [
+    {
+      "value": [],
+      "hex": ""
+    },
+    {
+      "value": [
+        1,
+        2,
+        3,
+        2
+      ],
+      "hex": "030142"
+    },
+    {
+      "value": [
+        0,
+        0
+      ],
+      "hex": "0100"
+    },
+    {
+      "value": [
+        1,
+        1,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "hex": "0201000303"
+    },
+    {
+      "value": [
+        -3,
+        -3,
+        7
+      ],
+      "hex": "460014"
+    }
+  ],
+  "stringencoder": [
+    {
+      "value": [],
+      "hex": "00"
+    },
+    {
+      "value": [
+        ""
+      ],
+      "hex": "0000"
+    },
+    {
+      "value": [
+        "abc"
+      ],
+      "hex": "0361626303"
+    },
+    {
+      "value": [
+        "Hello",
+        "World"
+      ],
+      "hex": "0a48656c6c6f576f726c644500"
+    },
+    {
+      "value": [
+        "",
+        "abc",
+        ""
+      ],
+      "hex": "03616263000300"
+    },
+    {
+      "value": [
+        "a😀b",
+        "c"
+      ],
+      "hex": "0761f09f988062630401"
+    },
+    {
+      "value": [
+        "Hello, 中国！𐐷𐐷𐐷"
+      ],
+      "hex": "1c48656c6c6f2c20e4b8ade59bbdefbc81f09090b7f09090b7f09090b710"
+    }
+  ]
+}
